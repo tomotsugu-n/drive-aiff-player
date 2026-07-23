@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive AIFF Player</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <main class="card">
+    <div class="eyebrow">GOOGLE DRIVE</div>
+    <h1>AIFF Player</h1>
+    <div id="filename" class="filename">AIFFを待っています…</div>
+
+    <audio id="player" controls></audio>
+
+    <button id="authButton" hidden>Google Driveへのアクセスを許可</button>
+    <div id="status">Driveからの情報を確認しています…</div>
+
+    <details>
+      <summary>詳細</summary>
+      <pre id="details"></pre>
+    </details>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
