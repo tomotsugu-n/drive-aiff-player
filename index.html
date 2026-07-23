@@ -18,12 +18,15 @@
     <button id="installButton">Google Driveにインストール</button>
     <button id="authButton" hidden>Google Driveへのアクセスを許可</button>
 
-    <div id="status">初回のみ「Google Driveにインストール」を押してください。</div>
+    <section class="diagnostic">
+      <h2>MIME診断</h2>
+      <input id="driveUrl" type="text"
+        placeholder="Google DriveのAIFF URLを貼る">
+      <button id="mimeButton">このファイルのMIMEを調べる</button>
+      <div id="mimeResult"></div>
+    </section>
 
-    <details>
-      <summary>詳細</summary>
-      <pre id="details"></pre>
-    </details>
+    <div id="status">初回のみ「Google Driveにインストール」を押してください。</div>
   </main>
 
   <script src="config.js"></script>
