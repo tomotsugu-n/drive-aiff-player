@@ -11,12 +11,14 @@
   <main class="card">
     <div class="eyebrow">GOOGLE DRIVE</div>
     <h1>AIFF Player</h1>
-    <div id="filename" class="filename">AIFFを待っています…</div>
+    <div id="filename" class="filename">Drive AIFF Player</div>
 
-    <audio id="player" controls></audio>
+    <audio id="player" controls hidden></audio>
 
+    <button id="installButton">Google Driveにインストール</button>
     <button id="authButton" hidden>Google Driveへのアクセスを許可</button>
-    <div id="status">Driveからの情報を確認しています…</div>
+
+    <div id="status">初回のみ「Google Driveにインストール」を押してください。</div>
 
     <details>
       <summary>詳細</summary>

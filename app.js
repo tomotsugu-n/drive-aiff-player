@@ -1,6 +1,7 @@
 const statusEl = document.getElementById("status");
 const detailsEl = document.getElementById("details");
 const filenameEl = document.getElementById("filename");
+const installButton = document.getElementById("installButton");
 const authButton = document.getElementById("authButton");
 const player = document.getElementById("player");
 
@@ -18,14 +19,11 @@ function setDetails(value) {
     : JSON.stringify(value, null, 2);
 }
 
-function parseDriveState() {
+function getDriveStateOrNull() {
   const params = new URLSearchParams(location.search);
   const raw = params.get("state");
-  if (!raw) {
-    throw new Error("Google Driveからの state パラメータがありません。");
-  }
+  if (!raw) return null;
 
-  // URLSearchParams already URL-decodes query values.
   const parsed = JSON.parse(raw);
   if (parsed.action !== "open") {
     throw new Error(`未対応のactionです: ${parsed.action || "(なし)"}`);
@@ -41,8 +39,10 @@ function initGoogleAuth() {
     setTimeout(initGoogleAuth, 100);
     return;
   }
+
   if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.includes("PASTE_WEB")) {
     setStatus("config.js に Web OAuth Client ID を設定してください。");
+    installButton.disabled = true;
     return;
   }
 
@@ -57,8 +57,18 @@ function initGoogleAuth() {
         setStatus(`Google認証エラー: ${response.error}`);
         return;
       }
+
+      installButton.hidden = true;
       authButton.hidden = true;
-      await openFromDrive(response.access_token);
+
+      if (driveState) {
+        await openFromDrive(response.access_token);
+      } else {
+        setStatus(
+          "Google Driveへのインストール権限を許可しました。\n" +
+          "Driveを再読み込みして、AIFFを右クリック →「アプリで開く」を確認してください。"
+        );
+      }
     },
     error_callback: (e) => {
       console.error(e);
@@ -66,26 +76,29 @@ function initGoogleAuth() {
     }
   });
 
-  authButton.hidden = false;
-  authButton.addEventListener("click", requestToken, { once: true });
+  installButton.onclick = () => {
+    setStatus("Google Driveへのインストール権限を確認しています…");
+    tokenClient.requestAccessToken({ prompt: "consent" });
+  };
 
-  // Because this page was explicitly opened from Drive, start auth immediately.
-  requestToken();
-}
+  authButton.onclick = () => {
+    setStatus("Google Driveへのアクセスを確認しています…");
+    tokenClient.requestAccessToken({ prompt: "" });
+  };
 
-function requestToken() {
-  if (!tokenClient) return;
-  setStatus("Google Driveへのアクセスを確認しています…");
-  tokenClient.requestAccessToken({ prompt: "" });
+  if (driveState) {
+    installButton.hidden = true;
+    authButton.hidden = false;
+    setStatus("Google DriveからAIFFを受け取りました。アクセスを確認しています…");
+    tokenClient.requestAccessToken({ prompt: "" });
+  }
 }
 
 async function openFromDrive(accessToken) {
   const fileId = driveState.ids[0];
   const resourceKey = driveState.resourceKeys?.[fileId];
 
-  const headers = {
-    Authorization: `Bearer ${accessToken}`
-  };
+  const headers = { Authorization: `Bearer ${accessToken}` };
   if (resourceKey) {
     headers["X-Goog-Drive-Resource-Keys"] = `${fileId}/${resourceKey}`;
   }
@@ -124,12 +137,12 @@ async function openFromDrive(accessToken) {
     if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
     currentObjectUrl = URL.createObjectURL(wav);
     player.src = currentObjectUrl;
+    player.hidden = false;
 
     try {
       await player.play();
       setStatus("再生中");
     } catch {
-      // Autoplay may be blocked; controls remain available.
       setStatus("読み込み完了。▶︎ を押すと再生します。");
     }
   } catch (e) {
@@ -137,7 +150,6 @@ async function openFromDrive(accessToken) {
     setStatus(`エラー:\n${e.message || e}`);
     authButton.hidden = false;
     authButton.textContent = "もう一度Google Driveへ接続";
-    authButton.onclick = () => tokenClient?.requestAccessToken({ prompt: "consent" });
   }
 }
 
@@ -195,7 +207,6 @@ function aiffToWavBlob(buffer) {
     const id = fourCC(v, p);
     const size = v.getUint32(p + 4, false);
     const start = p + 8;
-    if (start + size > v.byteLength + 1) break;
 
     if (id === "COMM" && size >= 18) {
       comm = {
@@ -253,7 +264,6 @@ function aiffToWavBlob(buffer) {
     if (comm.bits === 8) {
       w.setUint8(dst, v.getInt8(src) + 128);
     } else {
-      // AIFF is big-endian PCM, WAV PCM is little-endian.
       for (let b = 0; b < bytesPerSample; b++) {
         w.setUint8(dst + b, v.getUint8(src + bytesPerSample - 1 - b));
       }
@@ -266,8 +276,13 @@ function aiffToWavBlob(buffer) {
 }
 
 try {
-  driveState = parseDriveState();
-  setDetails(driveState);
+  driveState = getDriveStateOrNull();
+  setDetails(driveState || { mode: "install" });
+
+  if (driveState) {
+    filenameEl.textContent = "Google DriveからAIFFを開いています…";
+  }
+
   initGoogleAuth();
 } catch (e) {
   console.error(e);
