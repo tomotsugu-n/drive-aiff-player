@@ -1,18 +1,17 @@
-AIFF Player for Google Drive™ — Final Blue UI
+AIFF Player for Google Drive™ — Final Blue v2
+
+修正:
+- Drive API v3 に存在しない audioMediaMetadata の要求を削除
+- files.get は id/name/mimeType/size/capabilities(canDownload) のみ取得
+- 44.1 kHz / 16-bit / Stereo 等はAIFF自身のCOMMチャンクから取得
+- OAuthは前版の「再生ボタンクリック起点」のまま
+- MIME診断等の開発UIは無し
+- アクセントカラー #2A7FCC
 
 GitHubで差し替える:
-- index.html
-- style.css
 - app.js
+（index.html / style.css は前のBlue版と同一ですが、ZIPには同梱しています）
 
-config.js は差し替えないでください。
-現在の新しい Web OAuth Client ID をそのまま使います。
-
-変更点:
-- アクセントカラーをブルー #2A7FCC に変更
-- Google OAuth をページ表示時に自動起動しないよう修正
-- Driveから開いた後、最初の大きな再生ボタンのクリックを起点に認証
-- AIFF読み込み後は同じボタンが通常の再生 / 一時停止になる
-- MIME診断、インストールボタン、開発用UIは削除済み
+config.js は変更しないでください。
 
 Google Drive™ is a trademark of Google LLC.

@@ -90,7 +90,7 @@ async function loadDriveFile(accessToken) {
   setStatus("Google Drive™ からAIFFを読み込んでいます…");
 
   const metaUrl = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`);
-  metaUrl.searchParams.set("fields","id,name,mimeType,size,audioMediaMetadata,capabilities/canDownload");
+  metaUrl.searchParams.set("fields","id,name,mimeType,size,capabilities/canDownload");
   metaUrl.searchParams.set("supportsAllDrives","true");
 
   const metaResponse = await fetch(metaUrl,{headers});
@@ -106,7 +106,7 @@ async function loadDriveFile(accessToken) {
   }
 
   els.filename.textContent = meta.name || "AIFF";
-  els.filemeta.textContent = buildMetadataLabel(meta);
+  els.filemeta.textContent = "AIFF";
 
   const mediaResponse = await fetch(
     `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
@@ -115,6 +115,8 @@ async function loadDriveFile(accessToken) {
   if (!mediaResponse.ok) throw new Error(`AIFFファイルの取得に失敗しました (${mediaResponse.status})。`);
 
   const aiffBuffer = await mediaResponse.arrayBuffer();
+  const aiffInfo = readAiffInfo(aiffBuffer);
+  els.filemeta.textContent = buildAiffMetadataLabel(aiffInfo);
   const wavBlob = aiffToWavBlob(aiffBuffer);
 
   if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -126,18 +128,60 @@ async function loadDriveFile(accessToken) {
   setStatus("読み込み完了。▶ を押すと再生します。");
 }
 
-function buildMetadataLabel(meta) {
+function buildAiffMetadataLabel(info) {
   const parts = ["AIFF"];
-  const sr = meta.audioMediaMetadata?.sampleRate;
-  if (sr) {
-    const khz = Number(sr)/1000;
+
+  if (info.sampleRate) {
+    const khz = info.sampleRate / 1000;
     parts.push(`${Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1)} kHz`);
   }
-  const channels = meta.audioMediaMetadata?.channelCount;
-  if (channels === 1) parts.push("Mono");
-  else if (channels === 2) parts.push("Stereo");
-  else if (channels > 2) parts.push(`${channels} ch`);
+
+  if (info.bits) {
+    parts.push(`${info.bits}-bit`);
+  }
+
+  if (info.channels === 1) parts.push("Mono");
+  else if (info.channels === 2) parts.push("Stereo");
+  else if (info.channels > 2) parts.push(`${info.channels} ch`);
+
   return parts.join("  |  ");
+}
+
+function readAiffInfo(buffer) {
+  const view = new DataView(buffer);
+
+  if (view.byteLength < 12 || fourCC(view, 0) !== "FORM") {
+    throw new Error("AIFFファイルとして認識できません。");
+  }
+
+  const formType = fourCC(view, 8);
+  if (formType === "AIFC") {
+    throw new Error("AIFC（圧縮AIFF）は現在未対応です。");
+  }
+  if (formType !== "AIFF") {
+    throw new Error("AIFFファイルとして認識できません。");
+  }
+
+  let position = 12;
+
+  while (position + 8 <= view.byteLength) {
+    const id = fourCC(view, position);
+    const size = view.getUint32(position + 4, false);
+    const start = position + 8;
+
+    if (id === "COMM" && size >= 18) {
+      return {
+        channels: view.getUint16(start, false),
+        frames: view.getUint32(start + 2, false),
+        bits: view.getUint16(start + 6, false),
+        sampleRate: Math.round(readExtended80(view, start + 8))
+      };
+    }
+
+    position = start + size + (size & 1);
+  }
+
+  throw new Error("AIFFのCOMMチャンクを読み取れませんでした。");
 }
 
 function enableControls() {
