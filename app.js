@@ -1,204 +1,589 @@
-const statusEl = document.getElementById("status");
-const filenameEl = document.getElementById("filename");
-const installButton = document.getElementById("installButton");
-const authButton = document.getElementById("authButton");
-const mimeButton = document.getElementById("mimeButton");
-const driveUrlInput = document.getElementById("driveUrl");
-const mimeResult = document.getElementById("mimeResult");
-const player = document.getElementById("player");
+(() => {
+  "use strict";
 
-let driveState = null;
-let tokenClient = null;
-let currentObjectUrl = null;
-let lastToken = null;
-let authPurpose = "install";
+  // Runtime access only needs read-only Drive access.
+  // drive.install is a Marketplace installation scope, not needed to play a file.
+  const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 
-function setStatus(text) { statusEl.textContent = text; }
-
-function parseFileId(value) {
-  value = value.trim();
-  let m = value.match(/\/file\/d\/([A-Za-z0-9_-]+)/);
-  if (m) return m[1];
-  try {
-    const u = new URL(value);
-    const id = u.searchParams.get("id");
-    if (id) return id;
-  } catch (_) {}
-  if (/^[A-Za-z0-9_-]{10,}$/.test(value)) return value;
-  return null;
-}
-
-function getDriveStateOrNull() {
-  const raw = new URLSearchParams(location.search).get("state");
-  if (!raw) return null;
-  const parsed = JSON.parse(raw);
-  if (parsed.action !== "open" || !Array.isArray(parsed.ids) || !parsed.ids.length) {
-    throw new Error("Driveから渡されたファイル情報を認識できません。");
-  }
-  return parsed;
-}
-
-function initGoogleAuth() {
-  if (!window.google?.accounts?.oauth2) {
-    setTimeout(initGoogleAuth, 100);
-    return;
-  }
-  if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.includes("PASTE_WEB")) {
-    setStatus("config.js に Web OAuth Client ID を設定してください。");
-    installButton.disabled = mimeButton.disabled = true;
-    return;
-  }
-
-  tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: GOOGLE_CLIENT_ID,
-    scope: [
-      "https://www.googleapis.com/auth/drive.readonly",
-      "https://www.googleapis.com/auth/drive.install"
-    ].join(" "),
-    callback: async (response) => {
-      if (response.error) {
-        setStatus(`Google認証エラー: ${response.error}`);
-        return;
-      }
-      lastToken = response.access_token;
-
-      if (authPurpose === "mime") {
-        await inspectMime(lastToken);
-      } else if (driveState) {
-        await openFromDrive(lastToken);
-      } else {
-        setStatus("Google Driveへの権限を許可しました。");
-      }
-    }
-  });
-
-  installButton.onclick = () => {
-    authPurpose = "install";
-    tokenClient.requestAccessToken({ prompt: "consent" });
+  const el = {
+    filename: document.getElementById("filename"),
+    metadata: document.getElementById("metadata"),
+    seek: document.getElementById("seek"),
+    elapsed: document.getElementById("elapsed"),
+    total: document.getElementById("total"),
+    remaining: document.getElementById("remaining"),
+    play: document.getElementById("play"),
+    restart: document.getElementById("restart"),
+    back15: document.getElementById("back15"),
+    forward15: document.getElementById("forward15"),
+    mute: document.getElementById("mute"),
+    volume: document.getElementById("volume"),
+    status: document.getElementById("status"),
+    audio: document.getElementById("audio")
   };
 
-  mimeButton.onclick = async () => {
-    if (!parseFileId(driveUrlInput.value)) {
-      mimeResult.textContent = "Drive URLまたはFile IDを認識できません。";
+  let driveState = null;
+  let tokenClient = null;
+  let objectUrl = null;
+  let fileLoaded = false;
+  let authReady = false;
+  let lastVolume = Number(el.volume.value) || 0.8;
+
+  function setStatus(message, error = false) {
+    el.status.textContent = message;
+    el.status.classList.toggle("error", error);
+  }
+
+  function parseDriveState() {
+    const raw = new URLSearchParams(window.location.search).get("state");
+    if (!raw) return null;
+
+    let state;
+    try {
+      state = JSON.parse(raw);
+    } catch {
+      throw new Error("Google Drive™ から渡されたファイル情報を読み取れません。");
+    }
+
+    if (
+      state.action !== "open" ||
+      !Array.isArray(state.ids) ||
+      state.ids.length === 0
+    ) {
+      throw new Error("Google Drive™ からAIFFファイルが渡されていません。");
+    }
+
+    return state;
+  }
+
+  function initAuthWhenLibraryReady() {
+    if (!window.google?.accounts?.oauth2) {
+      window.setTimeout(initAuthWhenLibraryReady, 100);
       return;
     }
-    if (lastToken) {
-      await inspectMime(lastToken);
-    } else {
-      authPurpose = "mime";
-      tokenClient.requestAccessToken({ prompt: "" });
+
+    if (
+      typeof GOOGLE_CLIENT_ID !== "string" ||
+      !GOOGLE_CLIENT_ID ||
+      GOOGLE_CLIENT_ID.includes("PASTE_")
+    ) {
+      setStatus("OAuth Client ID が設定されていません。", true);
+      return;
     }
-  };
 
-  authButton.onclick = () => {
-    authPurpose = "open";
-    tokenClient.requestAccessToken({ prompt: "" });
-  };
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: DRIVE_SCOPE,
 
-  if (driveState) {
-    installButton.hidden = true;
-    authButton.hidden = false;
-    authPurpose = "open";
-    tokenClient.requestAccessToken({ prompt: "" });
+      callback: async (response) => {
+        if (response.error) {
+          setStatus(`Google認証エラー: ${response.error}`, true);
+          return;
+        }
+
+        try {
+          await loadSelectedDriveFile(response.access_token);
+        } catch (error) {
+          console.error(error);
+          setStatus(error?.message || String(error), true);
+        }
+      },
+
+      error_callback: (error) => {
+        console.error("Google Identity Services:", error);
+
+        const type = error?.type || "";
+        if (type === "popup_failed_to_open") {
+          setStatus("Google認証ウィンドウを開けませんでした。ポップアップ許可を確認してください。", true);
+        } else if (type === "popup_closed") {
+          setStatus("Google認証がキャンセルされました。", true);
+        } else {
+          setStatus("Google認証を開始できませんでした。", true);
+        }
+      }
+    });
+
+    authReady = true;
+
+    if (driveState && !fileLoaded) {
+      setStatus("▶ を押すとAIFFを読み込みます。");
+    }
   }
-}
 
-async function inspectMime(token) {
-  const fileId = parseFileId(driveUrlInput.value);
-  mimeResult.textContent = "確認中…";
+  async function loadSelectedDriveFile(accessToken) {
+    const fileId = driveState.ids[0];
+    const resourceKey = driveState.resourceKeys?.[fileId];
 
-  const url = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`);
-  url.searchParams.set("fields", "id,name,mimeType,fileExtension,size");
-  url.searchParams.set("supportsAllDrives", "true");
+    const headers = {
+      Authorization: `Bearer ${accessToken}`
+    };
 
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` }
+    if (resourceKey) {
+      headers["X-Goog-Drive-Resource-Keys"] = `${fileId}/${resourceKey}`;
+    }
+
+    setStatus("Google Drive™ からAIFFを読み込んでいます…");
+
+    // Keep this request deliberately minimal.
+    const metadataUrl = new URL(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`
+    );
+    metadataUrl.searchParams.set("fields", "id,name,mimeType,size");
+    metadataUrl.searchParams.set("supportsAllDrives", "true");
+
+    const metadataResponse = await fetch(metadataUrl, { headers });
+
+    if (!metadataResponse.ok) {
+      throw await driveApiError(metadataResponse, "ファイル情報の取得");
+    }
+
+    const metadata = await metadataResponse.json();
+
+    if (
+      metadata.mimeType &&
+      metadata.mimeType !== "audio/aiff" &&
+      metadata.mimeType !== "audio/x-aiff" &&
+      metadata.mimeType !== "application/octet-stream"
+    ) {
+      throw new Error(`AIFFではないファイルです (${metadata.mimeType})。`);
+    }
+
+    el.filename.textContent = metadata.name || "AIFF";
+
+    const mediaUrl =
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}` +
+      "?alt=media&supportsAllDrives=true";
+
+    const mediaResponse = await fetch(mediaUrl, { headers });
+
+    if (!mediaResponse.ok) {
+      throw await driveApiError(mediaResponse, "AIFFファイルの取得");
+    }
+
+    const aiffBuffer = await mediaResponse.arrayBuffer();
+
+    // Parse first. This verifies the file before we create a playable WAV.
+    const info = readAiffInfo(aiffBuffer);
+    el.metadata.textContent = formatAiffInfo(info);
+
+    const wavBlob = aiffToWavBlob(aiffBuffer);
+
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+    }
+
+    objectUrl = URL.createObjectURL(wavBlob);
+    el.audio.src = objectUrl;
+    el.audio.volume = Number(el.volume.value);
+    fileLoaded = true;
+
+    enablePlaybackControls();
+    setStatus("読み込み完了。");
+
+    // This call may be blocked because OAuth + download are asynchronous.
+    // That's fine; the same play button remains available.
+    try {
+      await el.audio.play();
+    } catch {
+      setStatus("読み込み完了。▶ を押すと再生します。");
+    }
+  }
+
+  async function driveApiError(response, label) {
+    let details = "";
+
+    try {
+      const data = await response.json();
+      details =
+        data?.error?.message ||
+        data?.error?.errors?.[0]?.message ||
+        "";
+    } catch {
+      try {
+        details = await response.text();
+      } catch {}
+    }
+
+    const suffix = details ? `: ${details}` : "";
+    return new Error(`${label}に失敗しました (${response.status})${suffix}`);
+  }
+
+  function enablePlaybackControls() {
+    el.seek.disabled = false;
+    el.restart.disabled = false;
+    el.back15.disabled = false;
+    el.forward15.disabled = false;
+    el.mute.disabled = false;
+    el.volume.disabled = false;
+  }
+
+  function formatAiffInfo(info) {
+    const parts = ["AIFF"];
+
+    if (info.sampleRate) {
+      const kHz = info.sampleRate / 1000;
+      parts.push(
+        `${Number.isInteger(kHz) ? kHz.toFixed(0) : kHz.toFixed(1)} kHz`
+      );
+    }
+
+    if (info.bits) {
+      parts.push(`${info.bits}-bit`);
+    }
+
+    if (info.channels === 1) {
+      parts.push("Mono");
+    } else if (info.channels === 2) {
+      parts.push("Stereo");
+    } else if (info.channels > 2) {
+      parts.push(`${info.channels} ch`);
+    }
+
+    return parts.join("  |  ");
+  }
+
+  function formatTime(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+
+    const minutes = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+
+    return `${minutes}:${String(secs).padStart(2, "0")}`;
+  }
+
+  function updateRangeVisual(range) {
+    const min = Number(range.min) || 0;
+    const max = Number(range.max) || 1;
+    const value = Number(range.value) || 0;
+    const percentage = ((value - min) / (max - min)) * 100;
+
+    range.style.setProperty("--progress", `${percentage}%`);
+  }
+
+  function updateTimeDisplay() {
+    const duration = el.audio.duration;
+    const current = el.audio.currentTime;
+
+    el.elapsed.textContent = formatTime(current);
+    el.total.textContent = formatTime(duration);
+
+    if (Number.isFinite(duration)) {
+      el.remaining.textContent = `-${formatTime(Math.max(0, duration - current))}`;
+
+      if (!el.seek.matches(":active")) {
+        el.seek.value = String(
+          Math.round((current / Math.max(duration, 0.001)) * 1000)
+        );
+        updateRangeVisual(el.seek);
+      }
+    }
+  }
+
+  // The first click is intentionally the OAuth user gesture.
+  el.play.addEventListener("click", async () => {
+    if (!driveState) {
+      setStatus(
+        "Google Drive™ でAIFFを右クリック →「アプリで開く」から起動してください。",
+        true
+      );
+      return;
+    }
+
+    if (!fileLoaded) {
+      if (!authReady || !tokenClient) {
+        setStatus("Google認証の準備中です。少し待ってからもう一度押してください。");
+        return;
+      }
+
+      setStatus("Google Drive™ に接続しています…");
+
+      // Called directly inside the click handler, as required by GIS.
+      tokenClient.requestAccessToken({ prompt: "" });
+      return;
+    }
+
+    if (el.audio.paused) {
+      try {
+        await el.audio.play();
+      } catch (error) {
+        console.error(error);
+        setStatus("再生を開始できませんでした。もう一度▶を押してください。", true);
+      }
+    } else {
+      el.audio.pause();
+    }
   });
 
-  if (!res.ok) {
-    mimeResult.textContent = `Drive API error ${res.status}\n${await res.text()}`;
-    return;
-  }
+  el.restart.addEventListener("click", () => {
+    el.audio.currentTime = 0;
+  });
 
-  const meta = await res.json();
-  mimeResult.textContent =
-    `name: ${meta.name || ""}\n` +
-    `mimeType: ${meta.mimeType || ""}\n` +
-    `fileExtension: ${meta.fileExtension || ""}\n` +
-    `fileId: ${meta.id || ""}`;
-}
+  el.back15.addEventListener("click", () => {
+    el.audio.currentTime = Math.max(0, el.audio.currentTime - 15);
+  });
 
-async function openFromDrive(accessToken) {
-  const fileId = driveState.ids[0];
-  const headers = { Authorization: `Bearer ${accessToken}` };
+  el.forward15.addEventListener("click", () => {
+    if (!Number.isFinite(el.audio.duration)) return;
+
+    el.audio.currentTime = Math.min(
+      el.audio.duration,
+      el.audio.currentTime + 15
+    );
+  });
+
+  el.seek.addEventListener("input", () => {
+    if (!Number.isFinite(el.audio.duration)) return;
+
+    const ratio = Number(el.seek.value) / 1000;
+    el.audio.currentTime = ratio * el.audio.duration;
+    updateRangeVisual(el.seek);
+  });
+
+  el.volume.addEventListener("input", () => {
+    const value = Number(el.volume.value);
+
+    el.audio.volume = value;
+    el.audio.muted = value === 0;
+
+    if (value > 0) {
+      lastVolume = value;
+    }
+
+    el.mute.textContent = value === 0 ? "MUTE" : "VOL";
+    updateRangeVisual(el.volume);
+  });
+
+  el.mute.addEventListener("click", () => {
+    if (el.audio.muted || el.audio.volume === 0) {
+      el.audio.muted = false;
+      el.audio.volume = lastVolume || 0.8;
+      el.volume.value = String(el.audio.volume);
+      el.mute.textContent = "VOL";
+    } else {
+      lastVolume = el.audio.volume;
+      el.audio.muted = true;
+      el.volume.value = "0";
+      el.mute.textContent = "MUTE";
+    }
+
+    updateRangeVisual(el.volume);
+  });
+
+  el.audio.addEventListener("loadedmetadata", updateTimeDisplay);
+  el.audio.addEventListener("timeupdate", updateTimeDisplay);
+
+  el.audio.addEventListener("play", () => {
+    el.play.classList.add("is-playing");
+    el.play.setAttribute("aria-label", "一時停止");
+  });
+
+  el.audio.addEventListener("pause", () => {
+    el.play.classList.remove("is-playing");
+    el.play.setAttribute("aria-label", "再生");
+  });
+
+  el.audio.addEventListener("ended", () => {
+    el.play.classList.remove("is-playing");
+  });
+
+  window.addEventListener("beforeunload", () => {
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+    }
+  });
+
+  updateRangeVisual(el.seek);
+  updateRangeVisual(el.volume);
 
   try {
-    const metaUrl = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`);
-    metaUrl.searchParams.set("fields", "id,name,mimeType,size");
-    metaUrl.searchParams.set("supportsAllDrives", "true");
+    driveState = parseDriveState();
 
-    const metaRes = await fetch(metaUrl, { headers });
-    if (!metaRes.ok) throw new Error(await metaRes.text());
-    const meta = await metaRes.json();
-    filenameEl.textContent = meta.name || "AIFF";
+    if (!driveState) {
+      setStatus(
+        "Google Drive™ でAIFFを右クリック →「アプリで開く」から起動してください。"
+      );
+    } else {
+      setStatus("認証を準備しています…");
+      initAuthWhenLibraryReady();
+    }
+  } catch (error) {
+    console.error(error);
+    setStatus(error?.message || String(error), true);
+  }
 
-    const mediaRes = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
-      { headers }
+  function fourCC(view, offset) {
+    return String.fromCharCode(
+      view.getUint8(offset),
+      view.getUint8(offset + 1),
+      view.getUint8(offset + 2),
+      view.getUint8(offset + 3)
     );
-    if (!mediaRes.ok) throw new Error(await mediaRes.text());
-
-    const aiff = await mediaRes.arrayBuffer();
-    const wav = aiffToWavBlob(aiff);
-    if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-    currentObjectUrl = URL.createObjectURL(wav);
-    player.src = currentObjectUrl;
-    player.hidden = false;
-    setStatus("読み込み完了。▶︎ を押すと再生します。");
-  } catch (e) {
-    setStatus(`エラー:\n${e.message || e}`);
   }
-}
 
-function fourCC(v, o) {
-  return String.fromCharCode(v.getUint8(o),v.getUint8(o+1),v.getUint8(o+2),v.getUint8(o+3));
-}
-function readExtended80(v, offset) {
-  const raw=v.getUint16(offset,false), sign=(raw&0x8000)?-1:1, exp=raw&0x7fff;
-  const hi=v.getUint32(offset+2,false), lo=v.getUint32(offset+6,false);
-  if(exp===0&&hi===0&&lo===0)return 0;
-  return sign*(hi*Math.pow(2,-31)+lo*Math.pow(2,-63))*Math.pow(2,exp-16383);
-}
-function writeAscii(v,o,s){for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));}
-function aiffToWavBlob(buffer) {
-  const v=new DataView(buffer);
-  if(v.byteLength<12||fourCC(v,0)!=="FORM"||fourCC(v,8)!=="AIFF")
-    throw new Error("非圧縮AIFFとして認識できません。");
-  let comm=null,ssnd=null,p=12;
-  while(p+8<=v.byteLength){
-    const id=fourCC(v,p),size=v.getUint32(p+4,false),start=p+8;
-    if(id==="COMM"&&size>=18)comm={channels:v.getUint16(start,false),frames:v.getUint32(start+2,false),bits:v.getUint16(start+6,false),sampleRate:Math.round(readExtended80(v,start+8))};
-    else if(id==="SSND"&&size>=8){const off=v.getUint32(start,false);ssnd={start:start+8+off,size:Math.max(0,size-8-off)};}
-    p=start+size+(size&1);
-  }
-  if(!comm||!ssnd||![8,16,24,32].includes(comm.bits))throw new Error("未対応AIFFです。");
-  const bps=comm.bits/8,align=comm.channels*bps,frames=Math.min(comm.frames,Math.floor(ssnd.size/align)),dataSize=frames*align;
-  const out=new ArrayBuffer(44+dataSize),w=new DataView(out);
-  writeAscii(w,0,"RIFF");w.setUint32(4,36+dataSize,true);writeAscii(w,8,"WAVE");writeAscii(w,12,"fmt ");
-  w.setUint32(16,16,true);w.setUint16(20,1,true);w.setUint16(22,comm.channels,true);w.setUint32(24,comm.sampleRate,true);
-  w.setUint32(28,comm.sampleRate*align,true);w.setUint16(32,align,true);w.setUint16(34,comm.bits,true);writeAscii(w,36,"data");w.setUint32(40,dataSize,true);
-  let src=ssnd.start,dst=44;
-  for(let i=0;i<frames*comm.channels;i++){
-    if(comm.bits===8)w.setUint8(dst,v.getInt8(src)+128);
-    else for(let b=0;b<bps;b++)w.setUint8(dst+b,v.getUint8(src+bps-1-b));
-    src+=bps;dst+=bps;
-  }
-  return new Blob([out],{type:"audio/wav"});
-}
+  function readExtended80(view, offset) {
+    const rawExponent = view.getUint16(offset, false);
+    const sign = rawExponent & 0x8000 ? -1 : 1;
+    const exponent = rawExponent & 0x7fff;
 
-try {
-  driveState = getDriveStateOrNull();
-  initGoogleAuth();
-} catch (e) {
-  setStatus(`エラー:\n${e.message || e}`);
-}
+    const high = view.getUint32(offset + 2, false);
+    const low = view.getUint32(offset + 6, false);
+
+    if (exponent === 0 && high === 0 && low === 0) {
+      return 0;
+    }
+
+    if (exponent === 0x7fff) {
+      return Infinity;
+    }
+
+    const mantissa =
+      high * Math.pow(2, -31) +
+      low * Math.pow(2, -63);
+
+    return sign * mantissa * Math.pow(2, exponent - 16383);
+  }
+
+  function readAiffInfo(buffer) {
+    const view = new DataView(buffer);
+
+    if (
+      view.byteLength < 12 ||
+      fourCC(view, 0) !== "FORM" ||
+      fourCC(view, 8) !== "AIFF"
+    ) {
+      throw new Error("非圧縮AIFFとして認識できません。");
+    }
+
+    let position = 12;
+
+    while (position + 8 <= view.byteLength) {
+      const id = fourCC(view, position);
+      const size = view.getUint32(position + 4, false);
+      const start = position + 8;
+
+      if (id === "COMM" && size >= 18) {
+        return {
+          channels: view.getUint16(start, false),
+          frames: view.getUint32(start + 2, false),
+          bits: view.getUint16(start + 6, false),
+          sampleRate: Math.round(readExtended80(view, start + 8))
+        };
+      }
+
+      position = start + size + (size & 1);
+    }
+
+    throw new Error("AIFFのCOMMチャンクが見つかりません。");
+  }
+
+  function writeAscii(view, offset, value) {
+    for (let i = 0; i < value.length; i += 1) {
+      view.setUint8(offset + i, value.charCodeAt(i));
+    }
+  }
+
+  function aiffToWavBlob(buffer) {
+    const view = new DataView(buffer);
+
+    if (view.byteLength < 12 || fourCC(view, 0) !== "FORM") {
+      throw new Error("AIFFファイルとして認識できません。");
+    }
+
+    const formType = fourCC(view, 8);
+
+    if (formType === "AIFC") {
+      throw new Error("AIFC（圧縮AIFF）は現在未対応です。");
+    }
+
+    if (formType !== "AIFF") {
+      throw new Error("AIFFファイルとして認識できません。");
+    }
+
+    let comm = null;
+    let ssnd = null;
+    let position = 12;
+
+    while (position + 8 <= view.byteLength) {
+      const id = fourCC(view, position);
+      const size = view.getUint32(position + 4, false);
+      const start = position + 8;
+
+      if (id === "COMM" && size >= 18) {
+        comm = {
+          channels: view.getUint16(start, false),
+          frames: view.getUint32(start + 2, false),
+          bits: view.getUint16(start + 6, false),
+          sampleRate: Math.round(readExtended80(view, start + 8))
+        };
+      } else if (id === "SSND" && size >= 8) {
+        const offset = view.getUint32(start, false);
+
+        ssnd = {
+          start: start + 8 + offset,
+          size: Math.max(0, size - 8 - offset)
+        };
+      }
+
+      position = start + size + (size & 1);
+    }
+
+    if (!comm || !ssnd) {
+      throw new Error("AIFFの音声データを読み取れません。");
+    }
+
+    if (![8, 16, 24, 32].includes(comm.bits)) {
+      throw new Error(`${comm.bits}-bit AIFFは現在未対応です。`);
+    }
+
+    const bytesPerSample = comm.bits / 8;
+    const blockAlign = comm.channels * bytesPerSample;
+    const framesAvailable = Math.floor(ssnd.size / blockAlign);
+    const frameCount = Math.min(comm.frames, framesAvailable);
+    const dataSize = frameCount * blockAlign;
+
+    if (frameCount <= 0) {
+      throw new Error("AIFFに再生可能な音声データがありません。");
+    }
+
+    const output = new ArrayBuffer(44 + dataSize);
+    const wav = new DataView(output);
+
+    writeAscii(wav, 0, "RIFF");
+    wav.setUint32(4, 36 + dataSize, true);
+    writeAscii(wav, 8, "WAVE");
+    writeAscii(wav, 12, "fmt ");
+    wav.setUint32(16, 16, true);
+    wav.setUint16(20, 1, true);
+    wav.setUint16(22, comm.channels, true);
+    wav.setUint32(24, comm.sampleRate, true);
+    wav.setUint32(28, comm.sampleRate * blockAlign, true);
+    wav.setUint16(32, blockAlign, true);
+    wav.setUint16(34, comm.bits, true);
+    writeAscii(wav, 36, "data");
+    wav.setUint32(40, dataSize, true);
+
+    let source = ssnd.start;
+    let target = 44;
+    const samples = frameCount * comm.channels;
+
+    for (let i = 0; i < samples; i += 1) {
+      if (comm.bits === 8) {
+        // AIFF 8-bit PCM is signed; WAV 8-bit PCM is unsigned.
+        wav.setUint8(target, view.getInt8(source) + 128);
+      } else {
+        // AIFF PCM is big endian; WAV PCM is little endian.
+        for (let byte = 0; byte < bytesPerSample; byte += 1) {
+          wav.setUint8(
+            target + byte,
+            view.getUint8(source + bytesPerSample - 1 - byte)
+          );
+        }
+      }
+
+      source += bytesPerSample;
+      target += bytesPerSample;
+    }
+
+    return new Blob([output], { type: "audio/wav" });
+  }
+})();
