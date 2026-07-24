@@ -75,7 +75,10 @@ function initGoogleAuth() {
     }
   });
 
-  tokenClient.requestAccessToken({ prompt: "" });
+  // Google Identity Services requires token requests to originate from
+  // a user gesture. Do not request a token automatically here.
+  els.playPause.disabled = false;
+  setStatus("▶ を押してAIFFを読み込みます。");
 }
 
 async function loadDriveFile(accessToken) {
@@ -120,8 +123,7 @@ async function loadDriveFile(accessToken) {
   els.audio.volume = Number(els.volume.value);
 
   enableControls();
-  setStatus("読み込み完了。");
-  try { await els.audio.play(); } catch {}
+  setStatus("読み込み完了。▶ を押すと再生します。");
 }
 
 function buildMetadataLabel(meta) {
@@ -185,9 +187,29 @@ els.audio.addEventListener("ended",() => {
   els.playPause.classList.remove("is-playing");
 });
 
-els.playPause.addEventListener("click",async() => {
-  if (els.audio.paused) await els.audio.play();
-  else els.audio.pause();
+els.playPause.addEventListener("click", async () => {
+  // Before the Drive file has been loaded, this click is the required
+  // user gesture that starts Google OAuth/token acquisition.
+  if (!els.audio.src) {
+    if (!tokenClient) {
+      setStatus("Google認証の準備中です。少し待ってもう一度押してください。");
+      return;
+    }
+    setStatus("Google Drive™ に接続しています…");
+    tokenClient.requestAccessToken({ prompt: "" });
+    return;
+  }
+
+  if (els.audio.paused) {
+    try {
+      await els.audio.play();
+    } catch (error) {
+      console.error(error);
+      setStatus("▶ をもう一度押すと再生できます。");
+    }
+  } else {
+    els.audio.pause();
+  }
 });
 els.restart.addEventListener("click",() => { els.audio.currentTime = 0; });
 els.back15.addEventListener("click",() => { els.audio.currentTime = Math.max(0,els.audio.currentTime-15); });

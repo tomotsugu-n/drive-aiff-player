@@ -4,8 +4,8 @@
   --text: #e8e8e8;
   --muted: #a8a8a8;
   --line: #353941;
-  --accent: #d6b90a;
-  --accent-soft: #e0c84e;
+  --accent: #2a7fcc;
+  --accent-soft: #4a98e8;
   --danger: #d66a6a;
   color-scheme: dark;
 }
@@ -37,7 +37,7 @@ button { color: inherit; }
 .player-header { display:flex; align-items:center; min-height:28px; margin-bottom:38px; }
 .brand { display:inline-flex; align-items:center; gap:13px; color:#efefef; font-size:15px; }
 .brand-mark { width:25px; height:22px; display:inline-flex; align-items:center; justify-content:center; gap:2px; }
-.brand-mark i { display:block; width:2px; border-radius:999px; background:var(--accent); box-shadow:0 0 8px rgba(214,185,10,.16); }
+.brand-mark i { display:block; width:2px; border-radius:999px; background:var(--accent); box-shadow:0 0 8px rgba(42,127,204,.16); }
 .brand-mark i:nth-child(1){height:6px}.brand-mark i:nth-child(2){height:13px}.brand-mark i:nth-child(3){height:20px}.brand-mark i:nth-child(4){height:12px}.brand-mark i:nth-child(5){height:7px}
 .content-grid { display:grid; grid-template-columns:minmax(150px,190px) 1fr; gap:34px; align-items:center; }
 .artwork {
@@ -57,7 +57,7 @@ button { color: inherit; }
 .range::-webkit-slider-runnable-track { height:4px; border-radius:999px; background:linear-gradient(to right,var(--accent) 0%,var(--accent) var(--progress,0%),var(--line) var(--progress,0%),var(--line) 100%); }
 .range::-moz-range-track { height:4px; border-radius:999px; background:var(--line); }
 .range::-moz-range-progress { height:4px; border-radius:999px; background:var(--accent); }
-.range::-webkit-slider-thumb { appearance:none; -webkit-appearance:none; width:15px; height:15px; margin-top:-5.5px; border:0; border-radius:50%; background:var(--accent-soft); box-shadow:0 0 0 2px rgba(214,185,10,.08); }
+.range::-webkit-slider-thumb { appearance:none; -webkit-appearance:none; width:15px; height:15px; margin-top:-5.5px; border:0; border-radius:50%; background:var(--accent-soft); box-shadow:0 0 0 2px rgba(42,127,204,.08); }
 .range::-moz-range-thumb { width:15px; height:15px; border:0; border-radius:50%; background:var(--accent-soft); }
 .time-row { display:flex; justify-content:space-between; margin-top:1px; color:#c4c4c4; font-size:12px; font-variant-numeric:tabular-nums; }
 .transport { display:grid; grid-template-columns:repeat(5,56px); justify-content:center; align-items:center; gap:14px; margin:28px 0 20px; }
