@@ -1,9 +1,13 @@
 (() => {
   "use strict";
 
-  // Runtime access only needs read-only Drive access.
-  // drive.install is a Marketplace installation scope, not needed to play a file.
-  const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+  // Drive UI integration requires drive.install so the app can appear
+  // in Drive's "Open with" / "New" menus.
+  // drive.readonly is required to read and download the selected file.
+  const DRIVE_SCOPE = [
+    "https://www.googleapis.com/auth/drive.install",
+    "https://www.googleapis.com/auth/drive.readonly"
+  ].join(" ");
 
   const el = {
     filename: document.getElementById("filename"),
@@ -94,7 +98,10 @@
 
         const type = error?.type || "";
         if (type === "popup_failed_to_open") {
-          setStatus("Google認証ウィンドウを開けませんでした。ポップアップ許可を確認してください。", true);
+          setStatus(
+            "Google認証ウィンドウを開けませんでした。ポップアップ許可を確認してください。",
+            true
+          );
         } else if (type === "popup_closed") {
           setStatus("Google認証がキャンセルされました。", true);
         } else {
@@ -124,7 +131,6 @@
 
     setStatus("Google Drive™ からAIFFを読み込んでいます…");
 
-    // Keep this request deliberately minimal.
     const metadataUrl = new URL(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`
     );
@@ -162,7 +168,6 @@
 
     const aiffBuffer = await mediaResponse.arrayBuffer();
 
-    // Parse first. This verifies the file before we create a playable WAV.
     const info = readAiffInfo(aiffBuffer);
     el.metadata.textContent = formatAiffInfo(info);
 
@@ -180,8 +185,6 @@
     enablePlaybackControls();
     setStatus("読み込み完了。");
 
-    // This call may be blocked because OAuth + download are asynchronous.
-    // That's fine; the same play button remains available.
     try {
       await el.audio.play();
     } catch {
@@ -279,7 +282,6 @@
     }
   }
 
-  // The first click is intentionally the OAuth user gesture.
   el.play.addEventListener("click", async () => {
     if (!driveState) {
       setStatus(
@@ -291,13 +293,14 @@
 
     if (!fileLoaded) {
       if (!authReady || !tokenClient) {
-        setStatus("Google認証の準備中です。少し待ってからもう一度押してください。");
+        setStatus(
+          "Google認証の準備中です。少し待ってからもう一度押してください。"
+        );
         return;
       }
 
       setStatus("Google Drive™ に接続しています…");
 
-      // Called directly inside the click handler, as required by GIS.
       tokenClient.requestAccessToken({ prompt: "" });
       return;
     }
@@ -307,7 +310,10 @@
         await el.audio.play();
       } catch (error) {
         console.error(error);
-        setStatus("再生を開始できませんでした。もう一度▶を押してください。", true);
+        setStatus(
+          "再生を開始できませんでした。もう一度▶を押してください。",
+          true
+        );
       }
     } else {
       el.audio.pause();
@@ -568,10 +574,8 @@
 
     for (let i = 0; i < samples; i += 1) {
       if (comm.bits === 8) {
-        // AIFF 8-bit PCM is signed; WAV 8-bit PCM is unsigned.
         wav.setUint8(target, view.getInt8(source) + 128);
       } else {
-        // AIFF PCM is big endian; WAV PCM is little endian.
         for (let byte = 0; byte < bytesPerSample; byte += 1) {
           wav.setUint8(
             target + byte,
